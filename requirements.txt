@@ -1,0 +1,7 @@
+streamlit
+gpxpy
+staticmap
+moviepy
+Pillow
+numpy
+imageio-ffmpeg

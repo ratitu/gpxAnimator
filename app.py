@@ -9,6 +9,8 @@ import os
 import time
 import io
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 st.set_page_config(page_title="GPX Animator", layout="wide", page_icon="🗺️")
 
@@ -23,6 +25,15 @@ line_color = st.sidebar.color_picker("Track Color", "#FF0000")
 zoom_level = st.sidebar.slider("Map Zoom Level", 1, 20, 14)
 map_size = st.sidebar.selectbox("Video Resolution", [480, 720, 1080], index=1)
 follow_mode = st.sidebar.checkbox("Follow Mode (Center on current point)", value=True)
+
+# Video Output Settings
+st.sidebar.header("Video Output")
+video_codec = st.sidebar.selectbox("Codec", ["libx264", "libx265", "libvpx"], index=0)
+video_quality = st.sidebar.select_slider(
+    "Quality", ["Low", "Medium", "High", "Ultra"], value="High"
+)
+quality_presets = {"Low": 23, "Medium": 18, "High": 14, "Ultra": 8}
+crf_value = quality_presets[video_quality]
 
 # Basemap Selection
 basemap_options = {
@@ -232,8 +243,85 @@ def get_track_stats(points):
     }
 
 
+def render_frame(args):
+    """Render a single frame (for batch processing)."""
+    (
+        i,
+        anim_points,
+        photos,
+        photo_events,
+        size,
+        zoom,
+        color,
+        follow,
+        url_template,
+        center,
+    ) = args
+    current_pt = anim_points[i]
+    current_track = [(p["lon"], p["lat"]) for p in anim_points[: i + 1]]
+
+    frame_map = StaticMap(size, size, url_template=url_template)
+
+    for photo in photos:
+        if photo["lat"] is not None and photo["lon"] is not None:
+            coord = (photo["lon"], photo["lat"])
+            frame_map.add_marker(CircleMarker(coord, "black", 12))
+            frame_map.add_marker(CircleMarker(coord, "yellow", 8))
+
+    if len(current_track) > 1:
+        frame_map.add_line(Line(current_track, color, 3))
+
+    frame_map.add_marker(
+        CircleMarker((current_pt["lon"], current_pt["lat"]), "white", 10)
+    )
+    frame_map.add_marker(CircleMarker((current_pt["lon"], current_pt["lat"]), color, 6))
+
+    if follow:
+        image = frame_map.render(
+            zoom=zoom, center=(current_pt["lon"], current_pt["lat"])
+        )
+    else:
+        image = frame_map.render(zoom=zoom, center=center)
+
+    active_candidates = []
+    for event in photo_events:
+        if event["start_frame"] <= i <= event["end_frame"]:
+            dist = abs(i - event["target_frame"])
+            active_candidates.append((dist, event["image"]))
+
+    if active_candidates:
+        active_candidates.sort(key=lambda x: x[0])
+        _, best_photo_img = active_candidates[0]
+        photo_img = best_photo_img.copy()
+        photo_img.thumbnail((size // 2.2, size // 2.2))
+        border = 5
+        framed_photo = Image.new(
+            "RGB",
+            (photo_img.width + 2 * border, photo_img.height + 2 * border),
+            "white",
+        )
+        framed_photo.paste(photo_img, (border, border))
+        image.paste(
+            framed_photo,
+            (size - framed_photo.width - 15, size - framed_photo.height - 15),
+        )
+
+    return i, np.array(image)
+
+
 def create_animation(
-    points, fps, duration, size, zoom, color, follow, url_template, photos, photo_dur
+    points,
+    fps,
+    duration,
+    size,
+    zoom,
+    color,
+    follow,
+    url_template,
+    photos,
+    photo_dur,
+    codec,
+    crf,
 ):
     total_frames = fps * duration
     if len(points) < 2:
@@ -243,7 +331,6 @@ def create_animation(
     step = max(1, len(points) // total_frames)
     anim_points = points[::step]
 
-    # Calculate display frames for each photo based on TIMESTAMP
     photo_events = []
     frames_to_show = int(fps * photo_dur)
     half_dur = frames_to_show // 2
@@ -252,7 +339,6 @@ def create_animation(
         best_frame_idx = -1
 
         if photo["timestamp"]:
-            # Match by Time
             min_time_diff = float("inf")
             photo_ts = photo["timestamp"].replace(tzinfo=None)
             for i, pt in enumerate(anim_points):
@@ -263,7 +349,6 @@ def create_animation(
                     if diff < min_time_diff:
                         min_time_diff = diff
                         best_frame_idx = i
-            # Ignore if time difference is too large (e.g. > 1 hour)
             if min_time_diff > 3600:
                 best_frame_idx = -1
 
@@ -272,7 +357,6 @@ def create_animation(
             and photo["lat"] is not None
             and photo["lon"] is not None
         ):
-            # Fallback to Match by Location
             min_dist = float("inf")
             for i, pt in enumerate(anim_points):
                 dist = np.sqrt(
@@ -281,7 +365,6 @@ def create_animation(
                 if dist < min_dist:
                     min_dist = dist
                     best_frame_idx = i
-            # Ignore if too far
             if min_dist > 0.005:
                 best_frame_idx = -1
 
@@ -295,86 +378,70 @@ def create_animation(
                 }
             )
 
-    frames = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
+    center = None
     if not follow:
         lons = [p["lon"] for p in points]
         lats = [p["lat"] for p in points]
         center = (np.mean(lons), np.mean(lats))
 
-    for i in range(len(anim_points)):
-        current_pt = anim_points[i]
-        current_track = [(p["lon"], p["lat"]) for p in anim_points[: i + 1]]
+    frames = [None] * len(anim_points)
+    batch_size = 50
+    num_batches = (len(anim_points) + batch_size - 1) // batch_size
 
-        frame_map = StaticMap(size, size, url_template=url_template)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    start_time = time.time()
 
-        # Add markers for ALL photos
-        for photo in photos:
-            if photo["lat"] is not None and photo["lon"] is not None:
-                coord = (photo["lon"], photo["lat"])
-                photo_marker = CircleMarker(coord, "black", 12)
-                photo_marker_inner = CircleMarker(coord, "yellow", 8)
-                frame_map.add_marker(photo_marker)
-                frame_map.add_marker(photo_marker_inner)
+    for batch_idx in range(num_batches):
+        batch_start = batch_idx * batch_size
+        batch_end = min(batch_start + batch_size, len(anim_points))
 
-        if len(current_track) > 1:
-            line = Line(current_track, color, 3)
-            frame_map.add_line(line)
-
-        marker = CircleMarker((current_pt["lon"], current_pt["lat"]), "white", 10)
-        marker_inner = CircleMarker((current_pt["lon"], current_pt["lat"]), color, 6)
-        frame_map.add_marker(marker)
-        frame_map.add_marker(marker_inner)
-
-        if follow:
-            image = frame_map.render(
-                zoom=zoom, center=(current_pt["lon"], current_pt["lat"])
+        args_list = [
+            (
+                i,
+                anim_points,
+                photos,
+                photo_events,
+                size,
+                zoom,
+                color,
+                follow,
+                url_template,
+                center,
             )
-        else:
-            image = frame_map.render(zoom=zoom, center=center)
+            for i in range(batch_start, batch_end)
+        ]
 
-        # Overlay photo if active
-        active_candidates = []
-        for event in photo_events:
-            if event["start_frame"] <= i <= event["end_frame"]:
-                dist = abs(i - event["target_frame"])
-                active_candidates.append((dist, event["image"]))
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(render_frame, args_list))
 
-        if active_candidates:
-            active_candidates.sort(key=lambda x: x[0])
-            _, best_photo_img = active_candidates[0]
+        for i, frame in results:
+            frames[i] = frame
 
-            photo_img = best_photo_img.copy()
-            photo_img.thumbnail((size // 2.2, size // 2.2))
-
-            border = 5
-            framed_photo = Image.new(
-                "RGB",
-                (photo_img.width + 2 * border, photo_img.height + 2 * border),
-                "white",
+        batch_progress = batch_end / len(anim_points)
+        elapsed = time.time() - start_time
+        if batch_progress > 0:
+            eta = elapsed / batch_progress - elapsed
+            status_text.text(
+                f"Rendering frame {batch_end}/{len(anim_points)}... ETA: {int(eta)}s"
             )
-            framed_photo.paste(photo_img, (border, border))
-            image.paste(
-                framed_photo,
-                (size - framed_photo.width - 15, size - framed_photo.height - 15),
-            )
+        progress_bar.progress(min(batch_progress, 1.0))
 
-        frames.append(np.array(image))
-
-        if i % max(1, len(anim_points) // 20) == 0:
-            progress = i / len(anim_points)
-            progress_bar.progress(progress)
-            status_text.text(f"Rendering frame {i}/{len(anim_points)}...")
-
+    frames = [f for f in frames if f is not None]
     progress_bar.progress(1.0)
     status_text.text("Compiling video...")
 
     try:
         clip = ImageSequenceClip(frames, fps=fps)
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        clip.write_videofile(tmp_file.name, codec="libx264", audio=False, logger=None)
+        clip.write_videofile(
+            tmp_file.name,
+            codec=codec,
+            audio=False,
+            logger=None,
+            preset="medium",
+            **{"crf": crf} if codec in ["libx264", "libx265"] else {},
+        )
         return tmp_file.name
     except Exception as e:
         st.error(f"Error during video generation: {e}")
@@ -383,8 +450,25 @@ def create_animation(
 
 if uploaded_file is not None:
     try:
-        points, gpx_data = parse_gpx(uploaded_file)
+        file_key = uploaded_file.name + str(uploaded_file.size)
+
+        if (
+            "gpx_cache" not in st.session_state
+            or st.session_state.get("gpx_cache_key") != file_key
+        ):
+            points, gpx_data = parse_gpx(uploaded_file)
+            st.session_state["gpx_cache"] = (points, gpx_data)
+            st.session_state["gpx_cache_key"] = file_key
+        else:
+            points, gpx_data = st.session_state["gpx_cache"]
+
         st.success(f"Parsed {len(points)} GPS points.")
+
+        has_time_data = any(p["time"] is not None for p in points)
+        if not has_time_data:
+            st.warning(
+                "GPX file has no timestamp data. Animation will use uniform timing."
+            )
 
         stats = get_track_stats(points)
         if stats:
@@ -420,6 +504,8 @@ if uploaded_file is not None:
                     map_url,
                     photos,
                     photo_display_duration,
+                    video_codec,
+                    crf_value,
                 )
 
                 if video_path:

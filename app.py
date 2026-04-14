@@ -437,13 +437,17 @@ def create_animation(
     try:
         clip = ImageSequenceClip(frames, fps=fps)
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+
+        ffmpeg_params = ["-preset", "medium"]
+        if codec in ["libx264", "libx265"]:
+            ffmpeg_params.extend(["-crf", str(crf)])
+
         clip.write_videofile(
             tmp_file.name,
             codec=codec,
             audio=False,
             logger=None,
-            preset="medium",
-            **{"crf": crf} if codec in ["libx264", "libx265"] else {},
+            ffmpeg_params=ffmpeg_params,
         )
         return tmp_file.name
     except Exception as e:

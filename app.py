@@ -155,6 +155,9 @@ def process_photos(photos, gpx_points):
         try:
             image_bytes = uploaded_photo.getvalue()
             image = Image.open(io.BytesIO(image_bytes))
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            image_array = np.array(image)
             exif = get_exif_data(image)
             lat, lon = get_lat_lon(exif)
             ts = get_photo_timestamp(exif)
@@ -162,7 +165,7 @@ def process_photos(photos, gpx_points):
             if ts or (lat is not None and lon is not None):
                 processed.append(
                     {
-                        "image": image,
+                        "image": image_array,
                         "timestamp": ts,
                         "lat": lat,
                         "lon": lon,
@@ -291,8 +294,8 @@ def render_frame(args):
 
     if active_candidates:
         active_candidates.sort(key=lambda x: x[0])
-        _, best_photo_img = active_candidates[0]
-        photo_img = best_photo_img.copy()
+        _, best_photo_array = active_candidates[0]
+        photo_img = Image.fromarray(best_photo_array)
         photo_img.thumbnail((size // 2.2, size // 2.2))
         border = 5
         framed_photo = Image.new(

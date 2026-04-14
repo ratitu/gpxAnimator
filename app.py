@@ -450,7 +450,9 @@ def create_animation(
 
 if uploaded_file is not None:
     try:
-        file_key = uploaded_file.name + str(uploaded_file.size)
+        file_key = getattr(uploaded_file, "name", default_gpx) + str(
+            getattr(uploaded_file, "size", 0)
+        )
 
         if (
             "gpx_cache" not in st.session_state

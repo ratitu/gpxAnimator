@@ -28,7 +28,8 @@ st.markdown("Upload a GPX file and photos to generate an animated video of your 
 # Sidebar Settings
 st.sidebar.header("Animation Settings")
 fps = st.sidebar.slider("Frames Per Second (FPS)", 5, 60, 24)
-duration_target = st.sidebar.slider("Target Video Duration (seconds)", 5, 120, 15)
+speed_options = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+speed_multiplier = st.sidebar.select_slider("Speed (× real time)", speed_options, value=10)
 line_color = st.sidebar.color_picker("Track Color", "#FF0000")
 zoom_level = st.sidebar.slider("Map Zoom Level", 1, 20, 14)
 resolutions = {
@@ -261,6 +262,16 @@ def get_track_stats(points):
     }
 
 
+def dim_color(hex_color, factor=0.35):
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    r = int(r * factor + 255 * (1 - factor))
+    g = int(g * factor + 255 * (1 - factor))
+    b = int(b * factor + 255 * (1 - factor))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 def render_frame(args):
     """Render a single frame (for batch processing)."""
     (
@@ -274,6 +285,8 @@ def render_frame(args):
         follow,
         url_template,
         center,
+        cum_dist,
+        elevations,
     ) = args
     current_pt = anim_points[i]
     current_track = [(p["lon"], p["lat"]) for p in anim_points[: i + 1]]
@@ -287,7 +300,13 @@ def render_frame(args):
             frame_map.add_marker(CircleMarker(coord, "yellow", 8))
 
     if len(current_track) > 1:
-        frame_map.add_line(Line(current_track, color, 3))
+        dimmed = dim_color(color, 0.35)
+        frame_map.add_line(Line(current_track, dimmed, 2))
+        trail_len = max(10, len(anim_points) // 20)
+        recent_start = max(0, len(current_track) - trail_len)
+        if len(current_track) - recent_start > 1:
+            recent_track = current_track[recent_start:]
+            frame_map.add_line(Line(recent_track, color, 3))
 
     frame_map.add_marker(
         CircleMarker((current_pt["lon"], current_pt["lat"]), "white", 10)
@@ -343,13 +362,42 @@ def render_frame(args):
     draw.text((6, map_h - text_h - 4), attribution, fill="black", font=font)
     draw.text((5, map_h - text_h - 5), attribution, fill="white", font=font)
 
+    if len(cum_dist) > 1 and any(p["elevation"] is not None for p in anim_points):
+        chart_w = min(200, max(100, map_w // 5))
+        chart_h = 55
+        pad = 5
+        cx = 10
+        cy = map_h - chart_h - 10 - text_h - 6
+        cy_end = cy + chart_h
+
+        overlay = Image.new("RGBA", (chart_w, chart_h), (0, 0, 0, 140))
+        image.paste(overlay, (cx, cy), overlay)
+
+        clean_el = [e if e is not None else 0 for e in elevations]
+        total_dist = cum_dist[-1]
+        el_min = min(clean_el)
+        el_max = max(clean_el)
+        el_range = max(el_max - el_min, 1)
+
+        traveled = min(i + 1, len(cum_dist))
+        pts = []
+        for j in range(traveled):
+            x = cx + pad + (cum_dist[j] / total_dist) * (chart_w - 2 * pad)
+            y = cy_end - pad - ((clean_el[j] - el_min) / el_range) * (chart_h - 2 * pad)
+            pts.append((int(x), int(y)))
+
+        if len(pts) > 1:
+            draw.line(pts, fill=color, width=2)
+        label = f"{cum_dist[min(traveled, len(cum_dist)) - 1]:.1f}km  {clean_el[min(traveled, len(clean_el)) - 1]:.0f}m"
+        draw.text((cx + 4, cy + 4), label, fill="white", font=font)
+
     return i, np.array(image)
 
 
 def create_animation(
     points,
     fps,
-    duration,
+    speed,
     size,
     zoom,
     color,
@@ -360,6 +408,13 @@ def create_animation(
     codec,
     crf,
 ):
+    if points[0]["time"] is not None and points[-1]["time"] is not None:
+        real_secs = (points[-1]["time"] - points[0]["time"]).total_seconds()
+        duration = real_secs / speed
+        duration = max(5, min(300, duration))
+    else:
+        duration = 15
+
     total_frames = fps * duration
     if len(points) < 2:
         st.error("Not enough points in GPX file.")
@@ -367,6 +422,16 @@ def create_animation(
 
     step = max(1, len(points) // total_frames)
     anim_points = points[::step]
+
+    cum_dist = [0.0]
+    elevations = [anim_points[0]["elevation"] or 0]
+    for j in range(1, len(anim_points)):
+        d = haversine(
+            anim_points[j - 1]["lat"], anim_points[j - 1]["lon"],
+            anim_points[j]["lat"], anim_points[j]["lon"],
+        )
+        cum_dist.append(cum_dist[-1] + d)
+        elevations.append(anim_points[j]["elevation"] or 0)
 
     photo_events = []
     frames_to_show = int(fps * photo_dur)
@@ -445,6 +510,8 @@ def create_animation(
                 follow,
                 url_template,
                 center,
+                cum_dist,
+                elevations,
             )
             for i in range(batch_start, batch_end)
         ]
@@ -539,13 +606,31 @@ if uploaded_file is not None:
                 photos = process_photos(uploaded_photos, points)
                 st.success(f"Successfully processed {len(photos)} photos.")
 
+        if stats and stats["duration_sec"]:
+            est = stats["duration_sec"] / speed_multiplier
+            st.info(f"⏱️ **Estimated video:** {int(est // 60)}m {int(est % 60)}s at {speed_multiplier}× speed")
+
+        with st.expander("🗺️ Map Preview", expanded=False):
+            if st.button("Render Preview", key="preview"):
+                with st.spinner("Rendering preview..."):
+                    lons = [p["lon"] for p in points]
+                    lats = [p["lat"] for p in points]
+                    pc = (np.mean(lons), np.mean(lats))
+                    track_pts = [(p["lon"], p["lat"]) for p in points]
+                    pmap = StaticMap(480, 480, url_template=map_url)
+                    pmap.add_line(Line(track_pts, line_color, 3))
+                    pmap.add_marker(CircleMarker(track_pts[0], "green", 10))
+                    pmap.add_marker(CircleMarker(track_pts[-1], "red", 10))
+                    img = pmap.render(zoom=zoom_level, center=pc)
+                    st.image(np.array(img), caption=f"Start (green) → End (red)  ·  Zoom {zoom_level}")
+
         if st.button("Generate Video"):
             start_time = time.time()
             with st.spinner("Generating animation..."):
                 video_path = create_animation(
                     points,
                     fps,
-                    duration_target,
+                    speed_multiplier,
                     map_size,
                     zoom_level,
                     line_color,

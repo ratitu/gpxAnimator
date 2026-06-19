@@ -23,7 +23,14 @@ fps = st.sidebar.slider("Frames Per Second (FPS)", 5, 60, 24)
 duration_target = st.sidebar.slider("Target Video Duration (seconds)", 5, 120, 15)
 line_color = st.sidebar.color_picker("Track Color", "#FF0000")
 zoom_level = st.sidebar.slider("Map Zoom Level", 1, 20, 14)
-map_size = st.sidebar.selectbox("Video Resolution", [480, 720, 1080], index=1)
+resolutions = {
+    "480p (1:1)": (480, 480),
+    "720p (1:1)": (720, 720),
+    "1080p (1:1)": (1080, 1080),
+    "1080p (9:16 Portrait)": (1080, 1920),
+}
+res_label = st.sidebar.selectbox("Video Resolution", list(resolutions.keys()), index=1)
+map_size = resolutions[res_label]
 follow_mode = st.sidebar.checkbox("Follow Mode (Center on current point)", value=True)
 
 # Video Output Settings
@@ -253,7 +260,7 @@ def render_frame(args):
         anim_points,
         photos,
         photo_events,
-        size,
+        (map_w, map_h),
         zoom,
         color,
         follow,
@@ -263,7 +270,7 @@ def render_frame(args):
     current_pt = anim_points[i]
     current_track = [(p["lon"], p["lat"]) for p in anim_points[: i + 1]]
 
-    frame_map = StaticMap(size, size, url_template=url_template)
+    frame_map = StaticMap(map_w, map_h, url_template=url_template)
 
     for photo in photos:
         if photo["lat"] is not None and photo["lon"] is not None:
@@ -296,7 +303,8 @@ def render_frame(args):
         active_candidates.sort(key=lambda x: x[0])
         _, best_photo_array = active_candidates[0]
         photo_img = Image.fromarray(best_photo_array)
-        photo_img.thumbnail((size // 2.2, size // 2.2))
+        max_thumb = int(min(map_w, map_h) / 2.2)
+        photo_img.thumbnail((max_thumb, max_thumb))
         border = 5
         framed_photo = Image.new(
             "RGB",
@@ -306,7 +314,7 @@ def render_frame(args):
         framed_photo.paste(photo_img, (border, border))
         image.paste(
             framed_photo,
-            (size - framed_photo.width - 15, size - framed_photo.height - 15),
+            (map_w - framed_photo.width - 15, map_h - framed_photo.height - 15),
         )
 
     return i, np.array(image)

@@ -11,16 +11,13 @@ import io
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import threading
-import cairosvg
 
 _LOGO = None
 
 def _get_logo():
     global _LOGO
     if _LOGO is None:
-        with open("logo-no-background.svg", "rb") as f:
-            png = cairosvg.svg2png(f.read(), output_width=200, output_height=200)
-        _LOGO = Image.open(io.BytesIO(png)).convert("RGBA")
+        _LOGO = Image.open("logo-no-background.png").convert("RGBA")
     return _LOGO
 
 st.set_page_config(page_title="GPX Animator", layout="wide", page_icon="🗺️")

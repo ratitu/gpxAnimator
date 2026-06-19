@@ -2,7 +2,7 @@ import streamlit as st
 import gpxpy
 import numpy as np
 from staticmap import StaticMap, Line, CircleMarker
-from moviepy import ImageSequenceClip
+from moviepy import ImageSequenceClip, AudioFileClip, concatenate_audioclips
 from PIL import Image, ExifTags, ImageDraw, ImageFont
 import tempfile
 import os
@@ -53,8 +53,11 @@ crf_value = quality_presets[video_quality]
 
 # Basemap Selection
 basemap_options = {
-    "OpenStreetMap": "https://a.tile.osm.org/{z}/{x}/{y}.png",
-    "Satellite (Esri World Imagery)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    "OpenStreetMap": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    "Satellite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    "Topographic (OpenTopoMap)": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+    "Light (CartoDB)": "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+    "Dark (CartoDB)": "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
 }
 selected_basemap = st.sidebar.selectbox("Basemap", list(basemap_options.keys()))
 map_url = basemap_options[selected_basemap]
@@ -62,6 +65,12 @@ map_url = basemap_options[selected_basemap]
 # Photo Settings
 st.sidebar.header("Photo Settings")
 photo_display_duration = st.sidebar.slider("Photo Display Duration (seconds)", 1, 10, 3)
+
+st.sidebar.header("Background Music")
+uploaded_audio = st.sidebar.file_uploader(
+    "Add music (optional)", type=["mp3", "wav", "ogg", "m4a", "flac"]
+)
+audio_volume = st.sidebar.slider("Music Volume", 0.0, 1.0, 0.5, 0.1)
 
 uploaded_file = st.file_uploader("Choose a GPX file", type=["gpx"])
 uploaded_photos = st.file_uploader(
@@ -407,6 +416,8 @@ def create_animation(
     photo_dur,
     codec,
     crf,
+    audio_path=None,
+    audio_volume=0.5,
 ):
     if points[0]["time"] is not None and points[-1]["time"] is not None:
         real_secs = (points[-1]["time"] - points[0]["time"]).total_seconds()
@@ -547,10 +558,23 @@ def create_animation(
         if codec in ["libx264", "libx265"]:
             ffmpeg_params.extend(["-crf", str(crf)])
 
+        if audio_path and os.path.exists(audio_path):
+            try:
+                audio = AudioFileClip(audio_path)
+                if audio_volume != 1.0:
+                    audio = audio.with_volume_scaled(audio_volume)
+                if audio.duration < clip.duration:
+                    n = int(clip.duration / audio.duration) + 1
+                    audio = concatenate_audioclips([audio] * n)
+                if audio.duration > clip.duration:
+                    audio = audio.subclipped(0, clip.duration)
+                clip = clip.with_audio(audio)
+            except Exception as e:
+                st.warning(f"Could not load background music: {e}")
+
         clip.write_videofile(
             tmp_file.name,
             codec=codec,
-            audio=False,
             logger=None,
             ffmpeg_params=ffmpeg_params,
         )
@@ -626,6 +650,14 @@ if uploaded_file is not None:
 
         if st.button("Generate Video"):
             start_time = time.time()
+            audio_tmp_path = None
+            if uploaded_audio is not None:
+                ext = os.path.splitext(uploaded_audio.name)[1] or ".mp3"
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                tmp.write(uploaded_audio.getvalue())
+                tmp.close()
+                audio_tmp_path = tmp.name
+
             with st.spinner("Generating animation..."):
                 video_path = create_animation(
                     points,
@@ -640,7 +672,12 @@ if uploaded_file is not None:
                     photo_display_duration,
                     video_codec,
                     crf_value,
+                    audio_tmp_path,
+                    audio_volume,
                 )
+
+            if audio_tmp_path:
+                os.remove(audio_tmp_path)
 
                 if video_path:
                     st.video(video_path)

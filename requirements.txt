@@ -5,3 +5,4 @@ moviepy
 Pillow
 numpy
 imageio-ffmpeg
+cairosvg

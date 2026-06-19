@@ -11,6 +11,17 @@ import io
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import cairosvg
+
+_LOGO = None
+
+def _get_logo():
+    global _LOGO
+    if _LOGO is None:
+        with open("logo-no-background.svg", "rb") as f:
+            png = cairosvg.svg2png(f.read(), output_width=200, output_height=200)
+        _LOGO = Image.open(io.BytesIO(png)).convert("RGBA")
+    return _LOGO
 
 st.set_page_config(page_title="GPX Animator", layout="wide", page_icon="🗺️")
 
@@ -316,6 +327,13 @@ def render_frame(args):
             framed_photo,
             (map_w - framed_photo.width - 15, map_h - framed_photo.height - 15),
         )
+
+    logo = _get_logo()
+    if logo:
+        logo_w = min(map_w, map_h) // 12
+        logo_h = int(logo.height * (logo_w / logo.width))
+        logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
+        image.paste(logo_resized, (map_w - logo_w - 10, 10), logo_resized)
 
     return i, np.array(image)
 

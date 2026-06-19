@@ -3,14 +3,14 @@ import gpxpy
 import numpy as np
 from staticmap import StaticMap, Line, CircleMarker
 from moviepy import ImageSequenceClip
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageDraw, ImageFont
 import tempfile
 import os
 import time
 import io
+import shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-import threading
 
 _LOGO = None
 
@@ -52,7 +52,7 @@ crf_value = quality_presets[video_quality]
 
 # Basemap Selection
 basemap_options = {
-    "OpenStreetMap": "http://a.tile.osm.org/{z}/{x}/{y}.png",
+    "OpenStreetMap": "https://a.tile.osm.org/{z}/{x}/{y}.png",
     "Satellite (Esri World Imagery)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
 }
 selected_basemap = st.sidebar.selectbox("Basemap", list(basemap_options.keys()))
@@ -332,6 +332,17 @@ def render_frame(args):
         logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
         image.paste(logo_resized, (map_w - logo_w - 10, 10), logo_resized)
 
+    draw = ImageDraw.Draw(image)
+    attribution = "© OpenStreetMap contributors"
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 12)
+    except IOError:
+        font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), attribution, font=font)
+    text_h = bbox[3] - bbox[1]
+    draw.text((6, map_h - text_h - 4), attribution, fill="black", font=font)
+    draw.text((5, map_h - text_h - 5), attribution, fill="white", font=font)
+
     return i, np.array(image)
 
 
@@ -410,9 +421,9 @@ def create_animation(
         lats = [p["lat"] for p in points]
         center = (np.mean(lons), np.mean(lats))
 
-    frames = [None] * len(anim_points)
     batch_size = 50
     num_batches = (len(anim_points) + batch_size - 1) // batch_size
+    frame_dir = tempfile.mkdtemp()
 
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -441,8 +452,10 @@ def create_animation(
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(render_frame, args_list))
 
-        for i, frame in results:
-            frames[i] = frame
+        for i, frame_array in results:
+            if frame_array is not None:
+                path = os.path.join(frame_dir, f"frame_{i:06d}.jpg")
+                Image.fromarray(frame_array).save(path, quality=90)
 
         batch_progress = batch_end / len(anim_points)
         elapsed = time.time() - start_time
@@ -453,12 +466,14 @@ def create_animation(
             )
         progress_bar.progress(min(batch_progress, 1.0))
 
-    frames = [f for f in frames if f is not None]
     progress_bar.progress(1.0)
     status_text.text("Compiling video...")
 
     try:
-        clip = ImageSequenceClip(frames, fps=fps)
+        frame_paths = sorted(
+            os.path.join(frame_dir, f) for f in os.listdir(frame_dir)
+        )
+        clip = ImageSequenceClip(frame_paths, fps=fps)
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
 
         ffmpeg_params = ["-preset", "medium"]
@@ -476,6 +491,8 @@ def create_animation(
     except Exception as e:
         st.error(f"Error during video generation: {e}")
         return None
+    finally:
+        shutil.rmtree(frame_dir, ignore_errors=True)
 
 
 if uploaded_file is not None:

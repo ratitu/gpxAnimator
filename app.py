@@ -361,22 +361,17 @@ def render_frame(args):
         image.paste(logo_resized, (map_w - logo_w - 10, 10), logo_resized)
 
     draw = ImageDraw.Draw(image)
-    attribution = "© OpenStreetMap contributors"
     try:
         font = ImageFont.truetype("DejaVuSans.ttf", 12)
     except IOError:
         font = ImageFont.load_default()
-    bbox = draw.textbbox((0, 0), attribution, font=font)
-    text_h = bbox[3] - bbox[1]
-    draw.text((6, map_h - text_h - 4), attribution, fill="black", font=font)
-    draw.text((5, map_h - text_h - 5), attribution, fill="white", font=font)
 
     if len(cum_dist) > 1 and any(p["elevation"] is not None for p in anim_points):
         chart_w = min(200, max(100, map_w // 5))
         chart_h = 55
         pad = 5
         cx = 10
-        cy = map_h - chart_h - 10 - text_h - 6
+        cy = map_h - chart_h - 16
         cy_end = cy + chart_h
 
         overlay = Image.new("RGBA", (chart_w, chart_h), (0, 0, 0, 140))

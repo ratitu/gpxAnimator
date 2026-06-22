@@ -554,10 +554,11 @@ def create_animation(
         clip = ImageSequenceClip(frame_paths, fps=fps)
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
 
-        ffmpeg_params = ["-preset", "medium"]
+        ffmpeg_params = []
         if codec in ["libx264", "libx265"]:
             ffmpeg_params.extend(["-crf", str(crf)])
 
+        has_audio = False
         if audio_path and os.path.exists(audio_path):
             try:
                 audio = AudioFileClip(audio_path)
@@ -569,12 +570,16 @@ def create_animation(
                 if audio.duration > clip.duration:
                     audio = audio.subclipped(0, clip.duration)
                 clip = clip.with_audio(audio)
+                has_audio = True
             except Exception as e:
                 st.warning(f"Could not load background music: {e}")
 
+        status_text.text("Compiling video with ffmpeg...")
         clip.write_videofile(
             tmp_file.name,
             codec=codec,
+            audio=has_audio,
+            preset="medium",
             logger=None,
             ffmpeg_params=ffmpeg_params,
         )
@@ -679,13 +684,13 @@ if uploaded_file is not None:
             if audio_tmp_path:
                 os.remove(audio_tmp_path)
 
-                if video_path:
-                    st.video(video_path)
-                    with open(video_path, "rb") as f:
-                        st.download_button(
-                            "Download Video", f, "gpx_animation.mp4", "video/mp4"
-                        )
-                    os.remove(video_path)
+            if video_path:
+                st.video(video_path)
+                with open(video_path, "rb") as f:
+                    st.download_button(
+                        "Download Video", f, "gpx_animation.mp4", "video/mp4"
+                    )
+                os.remove(video_path)
     except Exception as e:
         st.error(f"Error: {e}")
         st.exception(e)

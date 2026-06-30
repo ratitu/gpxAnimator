@@ -421,13 +421,13 @@ def create_animation(
     else:
         duration = 15
 
-    total_frames = fps * duration
+    total_frames = int(fps * duration)
     if len(points) < 2:
         st.error("Not enough points in GPX file.")
         return None
 
-    step = max(1, len(points) // total_frames)
-    anim_points = points[::step]
+    indices = np.linspace(0, len(points) - 1, total_frames).astype(int)
+    anim_points = [points[i] for i in indices]
 
     cum_dist = [0.0]
     elevations = [anim_points[0]["elevation"] or 0]

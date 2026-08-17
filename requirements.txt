@@ -5,3 +5,5 @@ moviepy
 Pillow
 numpy
 imageio-ffmpeg
+rasterio
+rio-tiler

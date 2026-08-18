@@ -1179,15 +1179,20 @@ def _render_3d_scene(
     m_lat, m_lon = _meters_per_deg(lat_c)
 
     if follow:
+        # The camera follows the current track point, but the terrain
+        # window stays fixed to the whole track: the mesh, basemap and
+        # elevation grid are then identical every frame (deterministic
+        # cache hits, no swimming terrain). Only the camera moves.
         center = (current_pt["lon"], current_pt["lat"])
+        bounds = track_bounds
     else:
         center = (lon_c, lat_c)
-    bounds = (
-        center[0] - lon_span / 2.0,
-        center[1] - lat_span / 2.0,
-        center[0] + lon_span / 2.0,
-        center[1] + lat_span / 2.0,
-    )
+        bounds = (
+            center[0] - lon_span / 2.0,
+            center[1] - lat_span / 2.0,
+            center[0] + lon_span / 2.0,
+            center[1] + lat_span / 2.0,
+        )
 
     tex_z = _texture_zoom_for(bounds, map_w, map_h)
     texture = _composite_basemap(bounds, tex_z, map_w, map_h, url_template)
